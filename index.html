@@ -179,11 +179,11 @@
     #dbCellPeak { cursor: pointer; }
 
     /* Abas de predefinições do equalizador */
-    .preset-tabs { display: flex; gap: 3px; }
+    .preset-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
     .preset-tab {
-      flex: 1;
       padding: 5px 2px;
       font-size: 10px;
+      white-space: nowrap;
       background: #111;
       border: 1px solid #222;
       border-radius: 3px;
@@ -192,7 +192,7 @@
     }
     .preset-tab:hover { background: #1a1a1a; border-color: #444; color: #ddd; }
     .preset-tab.active { background: #0f2a1c; border-color: #00e676; color: #00e676; font-weight: bold; }
-    .preset-hint { font-size: 9px; color: #777; text-align: center; min-height: 11px; }
+    .preset-hint { font-size: 9px; color: #777; text-align: center; min-height: 22px; line-height: 11px; }
     .mini-btn { padding: 1px 6px; font-size: 9px; background: #1c1c1c; color: #aaa; }
 
     /* Controls & Sliders */
@@ -372,6 +372,8 @@
           <button class="preset-tab" data-preset="music">🎵 Música</button>
           <button class="preset-tab" data-preset="voice">🎤 Voz</button>
           <button class="preset-tab" data-preset="choir">👥 Coral</button>
+          <button class="preset-tab" data-preset="youtube">▶ YouTube</button>
+          <button class="preset-tab" data-preset="facebook">📘 Facebook</button>
         </div>
         <div class="preset-hint" id="presetHint">Ajuste os controles livremente</div>
         <div class="eq-grid">
@@ -397,7 +399,7 @@
       <div class="panel-section sec-rec">
         <div class="panel-title">Gravação & Exportação</div>
         <button id="recordBtn" class="btn-action">🔴 Gravar Vídeo c/ Ajustes</button>
-        <div id="recStatus" style="font-size:9px; color:#888; text-align:center; margin-top:2px;">Pronto para exportar WebM</div>
+        <div id="recStatus" style="font-size:9px; color:#888; text-align:center; margin-top:2px;">Pronto: Full HD 1080p · áudio Opus 320 kbps (WebM)</div>
       </div>
     </div>
   </div>
@@ -456,7 +458,9 @@
 
     function initAudio() {
       if (audioCtx) return;
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const AC = window.AudioContext || window.webkitAudioContext;
+      try { audioCtx = new AC({ sampleRate: 48000, latencyHint: 'playback' }); }
+      catch (e) { audioCtx = new AC(); }
       
       source = audioCtx.createMediaElementSource(media);
       
@@ -637,6 +641,7 @@
       const file = e.target.files[0];
       if (file) {
         if (media.src && media.src.startsWith('blob:')) URL.revokeObjectURL(media.src);
+        currentFileName = file.name;
         media.src = URL.createObjectURL(file);
         media.play();
         initAudio();
@@ -705,7 +710,9 @@
     const PRESETS = {
       music: { low: 3,  mid: -1, high: 2.5, hint: 'Música: graves encorpados e agudos brilhantes' },
       voice: { low: -5, mid: 4,  high: 1.5, hint: 'Voz: corta graves e realça a clareza da fala' },
-      choir: { low: 2,  mid: 2,  high: 3,   hint: 'Coral: calor nos graves e mais brilho nas vozes' }
+      choir: { low: 2,  mid: 2,  high: 3,   hint: 'Coral: calor nos graves e mais brilho nas vozes' },
+      youtube:  { low: -1.5, mid: 2, high: 1.5, hint: 'YouTube: voz clara em alto-falante pequeno. Mantenha o PICO abaixo de -1 dB' },
+      facebook: { low: -3,   mid: 3, high: 2,   hint: 'Facebook: pensado para celular; reduz graves que o alto-falante não toca' }
     };
     const presetTabs = document.querySelectorAll('.preset-tab');
     const presetHint = document.getElementById('presetHint');
@@ -751,33 +758,77 @@
       }
     };
 
+    // ---------- Gravação Full HD (1920x1080) com áudio de alta qualidade ----------
+    const REC_W = 1920, REC_H = 1080, REC_FPS = 30;
+    const REC_VIDEO_BPS = 12000000;   // 12 Mbps de vídeo
+    const REC_AUDIO_BPS = 320000;     // 320 kbps de áudio (Opus, estéreo, 48 kHz)
+    let recCanvas, recCtx, recRAF = 0, recLimiter = null, currentFileName = '';
+
+    // Desenha cada quadro em 1920x1080 (com barras pretas se a proporção for diferente)
+    function drawRecFrame() {
+      recCtx.fillStyle = '#000';
+      recCtx.fillRect(0, 0, REC_W, REC_H);
+      const vw = media.videoWidth, vh = media.videoHeight;
+      if (vw && vh) {
+        const sc = Math.min(REC_W / vw, REC_H / vh);
+        const dw = vw * sc, dh = vh * sc;
+        recCtx.drawImage(media, (REC_W - dw) / 2, (REC_H - dh) / 2, dw, dh);
+      } else if (currentFileName) {
+        recCtx.fillStyle = '#666';
+        recCtx.font = '48px "Segoe UI", sans-serif';
+        recCtx.textAlign = 'center';
+        recCtx.fillText(currentFileName, REC_W / 2, REC_H / 2, REC_W - 200);
+      }
+    }
+    function recLoop() {
+      if (!isRecording) return;
+      drawRecFrame();
+      recRAF = requestAnimationFrame(recLoop);
+    }
+    function pickRecMime() {
+      const list = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+      return list.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+    }
+
     function startRecording() {
       initAudio();
       recordedChunks = [];
 
+      if (!recCanvas) {
+        recCanvas = document.createElement('canvas');
+        recCanvas.width = REC_W;
+        recCanvas.height = REC_H;
+        recCtx = recCanvas.getContext('2d', { alpha: false });
+        recCtx.imageSmoothingEnabled = true;
+        recCtx.imageSmoothingQuality = 'high';
+      }
+      drawRecFrame();
+
+      // Limitador de segurança: evita estouro (clipping) no arquivo quando o EQ aumenta o nível
+      recLimiter = audioCtx.createDynamicsCompressor();
+      recLimiter.threshold.value = -1;
+      recLimiter.knee.value = 0;
+      recLimiter.ratio.value = 20;
+      recLimiter.attack.value = 0.003;
+      recLimiter.release.value = 0.12;
+
       const dest = audioCtx.createMediaStreamDestination();
-      masterGain.connect(dest);
+      masterGain.connect(recLimiter);
+      recLimiter.connect(dest);
       recDest = dest;
 
-      let combinedStream;
-      if (media.captureStream) {
-        const vidStream = media.captureStream();
-        combinedStream = new MediaStream([
-          ...vidStream.getVideoTracks(),
-          ...dest.stream.getAudioTracks()
-        ]);
-      } else {
-        combinedStream = dest.stream;
-      }
+      const combinedStream = new MediaStream([
+        ...recCanvas.captureStream(REC_FPS).getVideoTracks(),
+        ...dest.stream.getAudioTracks()
+      ]);
 
+      const opts = { videoBitsPerSecond: REC_VIDEO_BPS, audioBitsPerSecond: REC_AUDIO_BPS };
+      const mimeType = pickRecMime();
+      if (mimeType) opts.mimeType = mimeType;
       try {
-        mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm;codecs=vp9,opus' });
+        mediaRecorder = new MediaRecorder(combinedStream, opts);
       } catch (e) {
-        try {
-          mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm' });
-        } catch (err) {
-          mediaRecorder = new MediaRecorder(combinedStream);
-        }
+        mediaRecorder = new MediaRecorder(combinedStream);
       }
 
       mediaRecorder.ondataavailable = (e) => {
@@ -785,8 +836,17 @@
       };
 
       mediaRecorder.onstop = () => {
-        if (recDest) { try { masterGain.disconnect(recDest); } catch (e) {} recDest = null; }
+        cancelAnimationFrame(recRAF);
+        if (recDest) {
+          try { masterGain.disconnect(recLimiter); } catch (e) {}
+          try { recLimiter.disconnect(); } catch (e) {}
+          recDest = null;
+          recLimiter = null;
+        }
+        combinedStream.getTracks().forEach(t => t.stop());
+
         const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        recordedChunks = [];
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.style.display = 'none';
@@ -798,14 +858,15 @@
           document.body.removeChild(a);
           window.URL.revokeObjectURL(url);
         }, 100);
-        recStatus.textContent = 'Arquivo salvo com sucesso!';
+        recStatus.textContent = 'Arquivo salvo (' + (blob.size / 1048576).toFixed(1) + ' MB) · Full HD 1080p';
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(1000);
       isRecording = true;
+      recLoop();
       recordBtn.textContent = '⏹ Parar e Salvar Vídeo';
       recordBtn.classList.add('recording');
-      recStatus.textContent = 'Gravando áudio/vídeo com equalização...';
+      recStatus.textContent = 'Gravando em Full HD 1920×1080 · áudio Opus 320 kbps';
       if (media.paused) media.play();
     }
 
