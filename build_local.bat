@@ -1,50 +1,48 @@
-@echo off
-chcp 65001 >nul
-cd /d "%~dp0"
-echo === MPC-HC Player: gerar .exe e instalador ===
+name: Compilar Executavel e Instalador Windows
 
-where python >nul 2>nul
-if errorlevel 1 goto sem_python
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
 
-python -m venv .venv
-if errorlevel 1 goto erro
-call .venv\Scripts\activate.bat
-python -m pip install --upgrade pip
-if errorlevel 1 goto erro
-pip install -r requirements.txt
-if errorlevel 1 goto erro
+jobs:
+  build:
+    runs-on: windows-latest
 
-pyinstaller --noconfirm --onefile --windowed --name MPC-HC-Player --collect-all webview --collect-all clr_loader --add-data "index.html;." main.py
-if errorlevel 1 goto erro
+    steps:
+    - name: Checkout Repositório
+      uses: actions/checkout@v4
 
-set "ISCC="
-if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
-if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
-if exist "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LocalAppData%\Programs\Inno Setup 6\ISCC.exe"
-if not defined ISCC goto sem_inno
+    - name: Configurar Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
 
-"%ISCC%" installer.iss
-if errorlevel 1 goto erro
-echo.
-echo PRONTO! Instalador: installer_output\MPC-HC-Player-Setup.exe
-echo Portatil:           dist\MPC-HC-Player.exe
-pause
-exit /b 0
+    - name: Instalar Dependências
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-:sem_inno
-echo.
-echo Executavel gerado em dist\MPC-HC-Player.exe
-echo Para criar o instalador, instale o Inno Setup 6 (https://jrsoftware.org/isdl.php) e rode este arquivo de novo.
-pause
-exit /b 0
+    - name: Compilar Executável com PyInstaller
+      run: |
+        pyinstaller --noconfirm --onefile --windowed --name MPC-HC-Player --collect-all webview --collect-all clr_loader --add-data "index.html;." main.py
 
-:sem_python
-echo Python nao encontrado. Instale em https://www.python.org/downloads/ marcando "Add python.exe to PATH".
-pause
-exit /b 1
+    - name: Instalar Inno Setup
+      run: choco install innosetup -y --no-progress
 
-:erro
-echo.
-echo Ocorreu um erro. Veja as mensagens acima.
-pause
-exit /b 1
+    - name: Gerar Instalador
+      run: |
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+    - name: Enviar Instalador (Setup)
+      uses: actions/upload-artifact@v4
+      with:
+        name: MPC-HC-Player-Instalador
+        path: installer_output/MPC-HC-Player-Setup.exe
+
+    - name: Enviar Executável Portátil
+      uses: actions/upload-artifact@v4
+      with:
+        name: MPC-HC-Player-Portatil
+        path: dist/MPC-HC-Player.exe
